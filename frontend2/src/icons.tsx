@@ -463,6 +463,50 @@ export function Users(props: LucideIconProps) {
   );
 }
 
+export function User(props: LucideIconProps) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={props.size ?? 24}
+      height={props.size ?? 24}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={props.color ?? "currentColor"}
+      stroke-width={props.strokeWidth ?? 2}
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      class={props.class ? "lucide lucide-user " + props.class : "lucide lucide-user"}
+      style={props.style}
+    >
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+export function XCircle(props: LucideIconProps) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={props.size ?? 24}
+      height={props.size ?? 24}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={props.color ?? "currentColor"}
+      stroke-width={props.strokeWidth ?? 2}
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      class={props.class ? "lucide lucide-circle-x " + props.class : "lucide lucide-circle-x"}
+      style={props.style}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
+    </svg>
+  );
+}
+
+
 export function X(props: LucideIconProps) {
   return (
     <svg

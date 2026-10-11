@@ -13,9 +13,9 @@ import { Bell, Check, ChevronDown, MapPin, Truck, User } from "../icons.js";
 const nav = [
   { label: "Home", href: "/" },
   { label: "How It Works", href: "/how-it-works" },
-  { label: "My Requests", href: "/my-requests" },
-  { label: "For Vendors", href: "/for-vendors" },
   { label: "Price Guide", href: "/price-guide" },
+  { label: "For Vendors", href: "/for-vendors" },
+  { label: "About", href: "/how-it-works" },
 ];
 
 export default function Header() {
