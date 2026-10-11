@@ -1,14 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import update, func, and_
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, List
 
 from app.db import get_db
-from app.models import User, ScrapRate, ScrapRequest
+from app.models import User, ScrapRate, ScrapRequest, RequestEvent
 from app.schemas import (
     ScrapRequestSummary,
     ScrapRequestDetail,
+    RequestEventSummary,
     CreateRequestRequest,
     CreateRequestResponse,
     ClaimResponse,
@@ -29,6 +30,7 @@ def get_nearby_requests(
     radius_km: float = Query(settings.default_radius_km, ge=0.5, le=50, description="Search radius in km"),
     db: Session = Depends(get_db),
 ):
+    """Return all open requests within radius with obfuscated coordinates for privacy."""
     min_lat, max_lat, min_lng, max_lng = bounding_box(lat, lng, radius_km)
 
     requests = (
@@ -56,12 +58,15 @@ def get_nearby_requests(
                     estimated_value=req.estimated_value,
                     latitude=approx_lat,
                     longitude=approx_lng,
+                    approx_latitude=approx_lat,
+                    approx_longitude=approx_lng,
                     distance_km=round_distance(distance),
                     status=req.status,
+                    created_at=req.created_at,
                 )
             )
 
-    results.sort(key=lambda x: x.distance_km or float("inf"))
+    results.sort(key=lambda x: x.distance_km if x.distance_km is not None else float("inf"))
     return results
 
 
@@ -70,24 +75,52 @@ def get_my_requests(
     user: User = Depends(get_actor),
     db: Session = Depends(get_db),
 ):
+    """Return requests belonging to the authenticated actor with full details."""
     if user.role == "HOUSEHOLD":
-        requests = db.query(ScrapRequest).filter(ScrapRequest.household_id == user.id).order_by(ScrapRequest.created_at.desc()).all()
-    else:
-        requests = db.query(ScrapRequest).filter(ScrapRequest.vendor_id == user.id).order_by(ScrapRequest.created_at.desc()).all()
-
-    return [
-        ScrapRequestSummary(
-            id=req.id,
-            scrap_type=req.scrap_type,
-            quantity_kg=req.quantity_kg,
-            rate_per_kg=req.rate_per_kg,
-            estimated_value=req.estimated_value,
-            latitude=float(req.latitude),
-            longitude=float(req.longitude),
-            status=req.status,
+        requests = (
+            db.query(ScrapRequest)
+            .filter(ScrapRequest.household_id == user.id)
+            .order_by(ScrapRequest.created_at.desc())
+            .all()
         )
-        for req in requests
-    ]
+    else:
+        requests = (
+            db.query(ScrapRequest)
+            .filter(ScrapRequest.vendor_id == user.id)
+            .order_by(ScrapRequest.created_at.desc())
+            .all()
+        )
+
+    results = []
+    for req in requests:
+        h_name = req.household.name if req.household else None
+        h_phone = req.household.phone if req.household else None
+        v_name = req.vendor.name if req.vendor else None
+        v_phone = req.vendor.phone if req.vendor else None
+
+        results.append(
+            ScrapRequestSummary(
+                id=req.id,
+                scrap_type=req.scrap_type,
+                quantity_kg=req.quantity_kg,
+                rate_per_kg=req.rate_per_kg,
+                estimated_value=req.estimated_value,
+                latitude=float(req.latitude),
+                longitude=float(req.longitude),
+                status=req.status,
+                address_note=req.address_note,
+                household_id=req.household_id,
+                household_name=h_name,
+                household_phone=h_phone,
+                vendor_id=req.vendor_id,
+                vendor_name=v_name,
+                vendor_phone=v_phone,
+                final_weight_kg=req.final_weight_kg,
+                final_amount=req.final_amount,
+                created_at=req.created_at,
+            )
+        )
+    return results
 
 
 @router.post("", response_model=CreateRequestResponse, status_code=201)
@@ -96,18 +129,51 @@ def create_request(
     user: User = Depends(require_household),
     db: Session = Depends(get_db),
 ):
-    rate = db.query(ScrapRate).filter(
-        ScrapRate.scrap_type == payload.scrap_type,
-        ScrapRate.is_active == True,
-    ).first()
+    """Idempotently create a new scrap request and record the initial CREATED event."""
+    # Check idempotency token
+    if payload.client_token:
+        existing = (
+            db.query(ScrapRequest)
+            .filter(
+                ScrapRequest.household_id == user.id,
+                ScrapRequest.client_token == payload.client_token,
+            )
+            .first()
+        )
+        if existing:
+            return CreateRequestResponse(
+                id=existing.id,
+                household_id=existing.household_id,
+                scrap_type=existing.scrap_type,
+                quantity_kg=existing.quantity_kg,
+                rate_per_kg=existing.rate_per_kg,
+                estimated_value=existing.estimated_value,
+                latitude=float(existing.latitude),
+                longitude=float(existing.longitude),
+                address_note=existing.address_note,
+                status=existing.status,
+                created_at=existing.created_at,
+            )
+
+    rate = (
+        db.query(ScrapRate)
+        .filter(
+            ScrapRate.scrap_type == payload.scrap_type,
+            ScrapRate.is_active == True,
+        )
+        .first()
+    )
 
     if not rate:
         raise HTTPException(
             status_code=400,
-            detail={"code": "INVALID_SCRAP_TYPE", "message": f"Unknown scrap type: {payload.scrap_type}"}
+            detail={"code": "INVALID_SCRAP_TYPE", "message": f"Active rate not found for: {payload.scrap_type}"},
         )
 
-    estimated_value = float(payload.quantity_kg) * float(rate.rate_per_kg)
+    # Quantize estimated_value to 0.01 using ROUND_HALF_UP
+    qty = Decimal(str(payload.quantity_kg))
+    r_kg = Decimal(str(rate.rate_per_kg))
+    estimated_value = (qty * r_kg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     request = ScrapRequest(
         household_id=user.id,
@@ -118,21 +184,36 @@ def create_request(
         latitude=payload.latitude,
         longitude=payload.longitude,
         address_note=payload.address_note,
+        client_token=payload.client_token,
         status="OPEN",
     )
     db.add(request)
+    db.flush()
+
+    # Record CREATED event
+    event = RequestEvent(
+        request_id=request.id,
+        actor_id=user.id,
+        event="CREATED",
+        from_status=None,
+        to_status="OPEN",
+    )
+    db.add(event)
     db.commit()
     db.refresh(request)
 
     return CreateRequestResponse(
         id=request.id,
+        household_id=request.household_id,
         scrap_type=request.scrap_type,
         quantity_kg=request.quantity_kg,
         rate_per_kg=request.rate_per_kg,
         estimated_value=request.estimated_value,
         latitude=float(request.latitude),
         longitude=float(request.longitude),
+        address_note=request.address_note,
         status=request.status,
+        created_at=request.created_at,
     )
 
 
@@ -142,24 +223,51 @@ def get_request(
     user: User = Depends(get_actor),
     db: Session = Depends(get_db),
 ):
+    """Retrieve full request detail including audit timeline."""
     request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
     if not request:
         raise HTTPException(
             status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
+            detail={"code": "REQUEST_NOT_FOUND", "message": "Request not found"},
         )
 
     is_owner = request.household_id == user.id
-    is_vendor = request.vendor_id == user.id
+    is_assigned_vendor = request.vendor_id == user.id
+    is_open_and_vendor = request.status == "OPEN" and user.role == "VENDOR"
 
-    if not (is_owner or is_vendor):
+    if not (is_owner or is_assigned_vendor or is_open_and_vendor):
         raise HTTPException(
             status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Not authorized to view this request"}
+            detail={"code": "FORBIDDEN", "message": "Not authorized to view this request"},
         )
 
     household = db.query(User).filter(User.id == request.household_id).first()
     vendor = db.query(User).filter(User.id == request.vendor_id).first() if request.vendor_id else None
+
+    # Privacy masking for unassigned vendors browsing open requests
+    lat = float(request.latitude)
+    lng = float(request.longitude)
+    address_note = request.address_note
+    household_name = household.name if household else None
+    household_phone = household.phone if household else None
+
+    if is_open_and_vendor and not is_owner:
+        lat, lng = round_coords(lat, lng)
+        address_note = "Available upon claim"
+        household_phone = None
+
+    events = [
+        RequestEventSummary(
+            id=e.id,
+            request_id=e.request_id,
+            actor_id=e.actor_id,
+            event=e.event,
+            from_status=e.from_status,
+            to_status=e.to_status,
+            created_at=e.created_at,
+        )
+        for e in request.events
+    ]
 
     return ScrapRequestDetail(
         id=request.id,
@@ -167,13 +275,16 @@ def get_request(
         quantity_kg=request.quantity_kg,
         rate_per_kg=request.rate_per_kg,
         estimated_value=request.estimated_value,
-        latitude=float(request.latitude),
-        longitude=float(request.longitude),
-        address_note=request.address_note if (is_owner or is_vendor) else None,
+        latitude=lat,
+        longitude=lng,
+        address_note=address_note,
+        client_token=request.client_token if is_owner else None,
         household_id=request.household_id,
-        household_name=household.name if household else None,
+        household_name=household_name,
+        household_phone=household_phone,
         vendor_id=request.vendor_id,
         vendor_name=vendor.name if vendor else None,
+        vendor_phone=vendor.phone if vendor else None,
         final_weight_kg=request.final_weight_kg,
         final_amount=request.final_amount,
         status=request.status,
@@ -183,6 +294,7 @@ def get_request(
         picked_up_at=request.picked_up_at,
         completed_at=request.completed_at,
         cancelled_at=request.cancelled_at,
+        events=events,
     )
 
 
@@ -192,52 +304,51 @@ def claim_request(
     user: User = Depends(require_vendor),
     db: Session = Depends(get_db),
 ):
-    request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
-    if not request:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
-        )
-
-    if request.status != "OPEN":
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "ALREADY_CLAIMED", "message": "This request was just claimed by another vendor."}
-        )
-
+    """Atomically claim an open request using a conditional single UPDATE."""
     result = db.execute(
         update(ScrapRequest)
         .where(
             ScrapRequest.id == request_id,
-            ScrapRequest.status == "OPEN"
+            ScrapRequest.status == "OPEN",
         )
         .values(
             status="CLAIMED",
             vendor_id=user.id,
             claimed_at=func.now(),
-            updated_at=func.now()
+            updated_at=func.now(),
         )
     )
-    db.commit()
 
     if result.rowcount == 0:
-        fresh_request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
-        if fresh_request and fresh_request.status != "OPEN":
+        db.rollback()
+        fresh = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
+        if not fresh:
             raise HTTPException(
-                status_code=409,
-                detail={"code": "ALREADY_CLAIMED", "message": "This request was just claimed by another vendor."}
+                status_code=404,
+                detail={"code": "REQUEST_NOT_FOUND", "message": "Request not found"},
             )
         raise HTTPException(
-            status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
+            status_code=409,
+            detail={"code": "ALREADY_CLAIMED", "message": "This request was just claimed by another vendor."},
         )
 
-    db.refresh(request)
+    # Insert audit event
+    event = RequestEvent(
+        request_id=request_id,
+        actor_id=user.id,
+        event="CLAIMED",
+        from_status="OPEN",
+        to_status="CLAIMED",
+    )
+    db.add(event)
+    db.commit()
+
+    claimed_req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
     return ClaimResponse(
-        id=request.id,
-        status=request.status,
-        vendor_id=request.vendor_id,
-        claimed_at=request.claimed_at,
+        id=claimed_req.id,
+        status=claimed_req.status,
+        vendor_id=claimed_req.vendor_id,
+        claimed_at=claimed_req.claimed_at,
     )
 
 
@@ -247,74 +358,46 @@ def release_request(
     user: User = Depends(require_vendor),
     db: Session = Depends(get_db),
 ):
-    request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
-    if not request:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
+    """Release a claimed request back to OPEN."""
+    result = db.execute(
+        update(ScrapRequest)
+        .where(
+            ScrapRequest.id == request_id,
+            ScrapRequest.status == "CLAIMED",
+            ScrapRequest.vendor_id == user.id,
         )
-
-    if request.vendor_id != user.id:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Only the assigned vendor can release this request"}
+        .values(
+            status="OPEN",
+            vendor_id=None,
+            claimed_at=None,
+            updated_at=func.now(),
         )
-
-    if request.status != "CLAIMED":
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_TRANSITION", "message": f"Cannot release request with status {request.status}"}
-        )
-
-    request.status = "OPEN"
-    request.vendor_id = None
-    request.claimed_at = None
-    request.updated_at = func.now()
-    db.commit()
-    db.refresh(request)
-
-    return StatusUpdateResponse(
-        id=request.id,
-        status=request.status,
-        updated_at=request.updated_at,
     )
 
+    if result.rowcount == 0:
+        db.rollback()
+        req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
+        if not req:
+            raise HTTPException(status_code=404, detail={"code": "REQUEST_NOT_FOUND", "message": "Request not found"})
+        if req.vendor_id != user.id:
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Only assigned vendor can release"})
+        raise HTTPException(status_code=400, detail={"code": "INVALID_TRANSITION", "message": f"Cannot release with status {req.status}"})
 
-@router.post("/{request_id}/cancel", response_model=StatusUpdateResponse)
-def cancel_request(
-    request_id: int,
-    user: User = Depends(require_household),
-    db: Session = Depends(get_db),
-):
-    request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
-    if not request:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
-        )
-
-    if request.household_id != user.id:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Only the household owner can cancel this request"}
-        )
-
-    if request.status not in ("OPEN", "CLAIMED"):
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_TRANSITION", "message": f"Cannot cancel request with status {request.status}"}
-        )
-
-    request.status = "CANCELLED"
-    request.cancelled_at = func.now()
-    request.updated_at = func.now()
+    event = RequestEvent(
+        request_id=request_id,
+        actor_id=user.id,
+        event="RELEASED",
+        from_status="CLAIMED",
+        to_status="OPEN",
+    )
+    db.add(event)
     db.commit()
-    db.refresh(request)
 
+    req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
     return StatusUpdateResponse(
-        id=request.id,
-        status=request.status,
-        updated_at=request.updated_at,
+        id=req.id,
+        status=req.status,
+        updated_at=req.updated_at,
     )
 
 
@@ -324,35 +407,45 @@ def pickup_request(
     user: User = Depends(require_vendor),
     db: Session = Depends(get_db),
 ):
-    request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
-    if not request:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
+    """Advance status from CLAIMED to PICKED_UP."""
+    result = db.execute(
+        update(ScrapRequest)
+        .where(
+            ScrapRequest.id == request_id,
+            ScrapRequest.status == "CLAIMED",
+            ScrapRequest.vendor_id == user.id,
         )
-
-    if request.vendor_id != user.id:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Only the assigned vendor can mark pickup"}
+        .values(
+            status="PICKED_UP",
+            picked_up_at=func.now(),
+            updated_at=func.now(),
         )
+    )
 
-    if request.status != "CLAIMED":
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_TRANSITION", "message": f"Cannot mark pickup for request with status {request.status}"}
-        )
+    if result.rowcount == 0:
+        db.rollback()
+        req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
+        if not req:
+            raise HTTPException(status_code=404, detail={"code": "REQUEST_NOT_FOUND", "message": "Request not found"})
+        if req.vendor_id != user.id:
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Only assigned vendor can mark pickup"})
+        raise HTTPException(status_code=400, detail={"code": "INVALID_TRANSITION", "message": f"Cannot pickup with status {req.status}"})
 
-    request.status = "PICKED_UP"
-    request.picked_up_at = func.now()
-    request.updated_at = func.now()
+    event = RequestEvent(
+        request_id=request_id,
+        actor_id=user.id,
+        event="PICKED_UP",
+        from_status="CLAIMED",
+        to_status="PICKED_UP",
+    )
+    db.add(event)
     db.commit()
-    db.refresh(request)
 
+    req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
     return StatusUpdateResponse(
-        id=request.id,
-        status=request.status,
-        updated_at=request.updated_at,
+        id=req.id,
+        status=req.status,
+        updated_at=req.updated_at,
     )
 
 
@@ -363,40 +456,107 @@ def complete_request(
     user: User = Depends(require_vendor),
     db: Session = Depends(get_db),
 ):
-    request = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
-    if not request:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "NOT_FOUND", "message": "Request not found"}
+    """Settle final weight and amount, transitioning from PICKED_UP to COMPLETED."""
+    req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail={"code": "REQUEST_NOT_FOUND", "message": "Request not found"})
+    if req.vendor_id != user.id:
+        raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Only assigned vendor can complete"})
+    if req.status != "PICKED_UP":
+        raise HTTPException(status_code=400, detail={"code": "INVALID_TRANSITION", "message": f"Cannot complete with status {req.status}"})
+
+    final_weight = payload.final_weight_kg if payload.final_weight_kg is not None else req.quantity_kg
+    w_dec = Decimal(str(final_weight))
+    r_dec = Decimal(str(req.rate_per_kg))
+    final_amount = (w_dec * r_dec).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    result = db.execute(
+        update(ScrapRequest)
+        .where(
+            ScrapRequest.id == request_id,
+            ScrapRequest.status == "PICKED_UP",
+            ScrapRequest.vendor_id == user.id,
         )
-
-    if request.vendor_id != user.id:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Only the assigned vendor can complete this request"}
+        .values(
+            status="COMPLETED",
+            final_weight_kg=final_weight,
+            final_amount=final_amount,
+            completed_at=func.now(),
+            updated_at=func.now(),
         )
+    )
 
-    if request.status != "PICKED_UP":
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_TRANSITION", "message": f"Cannot complete request with status {request.status}"}
-        )
+    if result.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=400, detail={"code": "CONCURRENT_CONFLICT", "message": "Update failed"})
 
-    final_weight = payload.final_weight_kg or request.quantity_kg
-    final_amount = float(final_weight) * float(request.rate_per_kg)
-
-    request.status = "COMPLETED"
-    request.final_weight_kg = final_weight
-    request.final_amount = final_amount
-    request.completed_at = func.now()
-    request.updated_at = func.now()
+    event = RequestEvent(
+        request_id=request_id,
+        actor_id=user.id,
+        event="COMPLETED",
+        from_status="PICKED_UP",
+        to_status="COMPLETED",
+    )
+    db.add(event)
     db.commit()
-    db.refresh(request)
 
+    updated = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
     return StatusUpdateResponse(
-        id=request.id,
-        status=request.status,
-        final_weight_kg=request.final_weight_kg,
-        final_amount=request.final_amount,
-        updated_at=request.updated_at,
+        id=updated.id,
+        status=updated.status,
+        final_weight_kg=updated.final_weight_kg,
+        final_amount=updated.final_amount,
+        updated_at=updated.updated_at,
+    )
+
+
+@router.post("/{request_id}/cancel", response_model=StatusUpdateResponse)
+def cancel_request(
+    request_id: int,
+    user: User = Depends(require_household),
+    db: Session = Depends(get_db),
+):
+    """Household cancels request while in OPEN or CLAIMED status."""
+    req = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail={"code": "REQUEST_NOT_FOUND", "message": "Request not found"})
+    if req.household_id != user.id:
+        raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Only household owner can cancel"})
+    if req.status not in ("OPEN", "CLAIMED"):
+        raise HTTPException(status_code=400, detail={"code": "INVALID_TRANSITION", "message": f"Cannot cancel request with status {req.status}"})
+
+    old_status = req.status
+    result = db.execute(
+        update(ScrapRequest)
+        .where(
+            ScrapRequest.id == request_id,
+            ScrapRequest.household_id == user.id,
+            ScrapRequest.status.in_(["OPEN", "CLAIMED"]),
+        )
+        .values(
+            status="CANCELLED",
+            cancelled_at=func.now(),
+            updated_at=func.now(),
+        )
+    )
+
+    if result.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=400, detail={"code": "CONCURRENT_CONFLICT", "message": "Cancel failed"})
+
+    event = RequestEvent(
+        request_id=request_id,
+        actor_id=user.id,
+        event="CANCELLED",
+        from_status=old_status,
+        to_status="CANCELLED",
+    )
+    db.add(event)
+    db.commit()
+
+    updated = db.query(ScrapRequest).filter(ScrapRequest.id == request_id).first()
+    return StatusUpdateResponse(
+        id=updated.id,
+        status=updated.status,
+        updated_at=updated.updated_at,
     )

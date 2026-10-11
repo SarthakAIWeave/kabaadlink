@@ -1,6 +1,6 @@
 import { Title } from "@solidjs/meta";
-import { createSignal, createMemo, For, Show } from "solid-js";
-import { cancelUserRequest, requests } from "../data/store";
+import { createSignal, createMemo, createEffect, For, Show } from "solid-js";
+import { cancelUserRequest, requests, refreshRequests } from "../data/store";
 import {
   Archive,
   ArrowRight,

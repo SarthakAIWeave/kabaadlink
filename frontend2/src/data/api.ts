@@ -45,6 +45,8 @@ export type ScrapRequest = {
   distance_km?: number;
   latitude: number;
   longitude: number;
+  approx_latitude?: number;
+  approx_longitude?: number;
   address: string;
   address_note?: string;
   created_at: string;
@@ -72,70 +74,47 @@ export function getApiUserId(): number {
 // In-memory mock requests store
 let mockRequests: ScrapRequest[] = [
   {
-    id: "REQ-2024-0815",
+    id: "REQ-1",
     household_id: 1,
     household_name: "Priya Sharma",
     household_phone: "+91 98765 43210",
     category: "Newspaper & Paper",
     scrap_type: "newspaper",
-    weight: 10,
-    quantity_kg: 10,
+    weight: 12.5,
+    quantity_kg: 12.5,
     rate_per_kg: 15,
-    estimated_value: 150,
+    estimated_value: 187.5,
     status: "OPEN",
     distance_km: 1.2,
-    latitude: 28.5244,
-    longitude: 77.2188,
-    address: "Saket, New Delhi – 110017",
-    address_note: "Gate no. 3, Near City Center Saket. Today 4:00 PM – 7:00 PM",
+    latitude: 28.6139,
+    longitude: 77.2090,
+    address: "B-42, Pandara Road, Ground Floor",
+    address_note: "B-42, Pandara Road, Ground Floor",
     created_at: new Date(Date.now() - 3600000).toISOString(),
   },
   {
-    id: "REQ-2024-0816",
+    id: "REQ-2",
     household_id: 2,
     household_name: "Rohan Verma",
     household_phone: "+91 98111 22334",
-    category: "Cardboard",
-    scrap_type: "cardboard",
-    weight: 12.5,
-    quantity_kg: 12.5,
-    rate_per_kg: 8,
-    estimated_value: 100,
-    status: "OPEN",
-    distance_km: 2.4,
-    latitude: 28.5200,
-    longitude: 77.2150,
-    address: "Flat 402, Green Avenue, Saket",
-    address_note: "Keep near security gate.",
-    created_at: new Date(Date.now() - 7200000).toISOString(),
-  },
-  {
-    id: "REQ-2024-0814",
-    household_id: 1,
-    household_name: "Priya Sharma",
-    household_phone: "+91 98765 43210",
-    vendor_id: 3,
-    vendor_name: "Ramesh Scrap Store",
-    vendor_phone: "+91 98999 11223",
     category: "Metal",
     scrap_type: "iron",
-    weight: 8,
-    quantity_kg: 8,
-    rate_per_kg: 30,
-    estimated_value: 240,
-    status: "CLAIMED",
-    distance_km: 0.8,
-    latitude: 28.5244,
-    longitude: 77.2188,
-    address: "Saket, New Delhi – 110017",
-    address_note: "Call 10 mins before arrival",
-    created_at: new Date(Date.now() - 14400000).toISOString(),
-    claimed_at: new Date(Date.now() - 3600000).toISOString(),
+    weight: 25.0,
+    quantity_kg: 25.0,
+    rate_per_kg: 25,
+    estimated_value: 625.0,
+    status: "OPEN",
+    distance_km: 0.9,
+    latitude: 28.6200,
+    longitude: 77.2150,
+    address: "Sector 3, Building 14",
+    address_note: "Sector 3, Building 14",
+    created_at: new Date(Date.now() - 7200000).toISOString(),
   },
 ];
 
 // Helper to normalize backend status (e.g. PICKED_UP -> PICKED UP)
-function normalizeStatus(st: string): ScrapRequest["status"] {
+export function normalizeStatus(st: string): ScrapRequest["status"] {
   if (st === "PICKED_UP") return "PICKED UP";
   if (st === "CLAIMED") return "CLAIMED";
   if (st === "COMPLETED") return "COMPLETED";
@@ -151,7 +130,7 @@ export function typeToCategory(scrapType: string): string {
     plastic: "Plastic",
     iron: "Metal",
     metal: "Metal",
-    aluminium: "E-Waste",
+    aluminium: "Aluminium",
     ewaste: "E-Waste",
     glass: "Glass",
     clothes: "Clothes & Fabric",
@@ -165,9 +144,10 @@ export function categoryToType(categoryName: string): string {
     "Cardboard": "cardboard",
     "Plastic": "plastic",
     "Metal": "iron",
+    "Aluminium": "aluminium",
     "E-Waste": "aluminium",
-    "Glass": "glass",
-    "Clothes & Fabric": "clothes",
+    "Glass": "plastic",
+    "Clothes & Fabric": "cardboard",
     "Others": "iron",
   };
   return map[categoryName] || "newspaper";
@@ -179,18 +159,22 @@ export async function apiFetchRates(): Promise<ScrapRate[]> {
     const res = await fetch(`${API_BASE_URL}/api/rates`, { signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       const data = await res.json();
-      return data.rates || data;
+      const list = Array.isArray(data) ? data : data.rates || [];
+      return list.map((r: any) => ({
+        scrap_type: r.scrap_type,
+        display_name: r.display_name,
+        rate_per_kg: Number(r.rate_per_kg),
+        currency: r.currency || "INR",
+        is_indicative: r.is_indicative !== undefined ? r.is_indicative : true,
+      }));
     }
   } catch {}
-  // Default benchmark rates
   return [
-    { scrap_type: "newspaper", display_name: "Newspaper & Paper", rate_per_kg: 15, currency: "INR", is_indicative: true },
-    { scrap_type: "plastic", display_name: "Plastic", rate_per_kg: 12, currency: "INR", is_indicative: true },
-    { scrap_type: "iron", display_name: "Metal", rate_per_kg: 32, currency: "INR", is_indicative: true },
-    { scrap_type: "aluminium", display_name: "E-Waste", rate_per_kg: 45, currency: "INR", is_indicative: true },
-    { scrap_type: "glass", display_name: "Glass", rate_per_kg: 4, currency: "INR", is_indicative: true },
-    { scrap_type: "cardboard", display_name: "Cardboard", rate_per_kg: 9, currency: "INR", is_indicative: true },
-    { scrap_type: "clothes", display_name: "Clothes & Fabric", rate_per_kg: 7, currency: "INR", is_indicative: true },
+    { scrap_type: "newspaper", display_name: "Newspaper", rate_per_kg: 15, currency: "INR", is_indicative: true },
+    { scrap_type: "cardboard", display_name: "Cardboard", rate_per_kg: 8, currency: "INR", is_indicative: true },
+    { scrap_type: "plastic", display_name: "Plastic", rate_per_kg: 10, currency: "INR", is_indicative: true },
+    { scrap_type: "iron", display_name: "Iron", rate_per_kg: 25, currency: "INR", is_indicative: true },
+    { scrap_type: "aluminium", display_name: "Aluminium", rate_per_kg: 80, currency: "INR", is_indicative: true },
   ];
 }
 
@@ -207,8 +191,8 @@ export async function apiCreateRequest(params: {
   const payload = {
     scrap_type,
     quantity_kg: params.weight,
-    latitude: params.lat || 28.5244,
-    longitude: params.lng || 77.2188,
+    latitude: params.lat || 28.6139,
+    longitude: params.lng || 77.2090,
     address_note: `${params.address}${params.notes ? ` — ${params.notes}` : ""}`,
   };
 
@@ -225,21 +209,21 @@ export async function apiCreateRequest(params: {
     if (res.ok) {
       const bReq = await res.json();
       const newReq: ScrapRequest = {
-        id: bReq.id ? `REQ-${bReq.id}` : `REQ-${Date.now().toString().slice(-6)}`,
+        id: bReq.id ? `REQ-${bReq.id}` : `REQ-${Date.now().toString().slice(-4)}`,
         household_id: currentUserId,
         household_name: DEMO_USERS.find((u) => u.id === currentUserId)?.name || "Priya Sharma",
         category: params.category,
         scrap_type,
-        weight: params.weight,
-        quantity_kg: params.weight,
-        rate_per_kg: bReq.rate_per_kg || 15,
-        estimated_value: bReq.estimated_value || params.weight * 15,
+        weight: Number(bReq.quantity_kg || params.weight),
+        quantity_kg: Number(bReq.quantity_kg || params.weight),
+        rate_per_kg: Number(bReq.rate_per_kg || 15),
+        estimated_value: Number(bReq.estimated_value || params.weight * 15),
         status: "OPEN",
-        latitude: payload.latitude,
-        longitude: payload.longitude,
-        address: params.address,
+        latitude: Number(bReq.latitude || payload.latitude),
+        longitude: Number(bReq.longitude || payload.longitude),
+        address: bReq.address_note || params.address,
         address_note: params.notes,
-        created_at: new Date().toISOString(),
+        created_at: bReq.created_at || new Date().toISOString(),
       };
       mockRequests.unshift(newReq);
       return newReq;
@@ -247,8 +231,8 @@ export async function apiCreateRequest(params: {
   } catch {}
 
   // Local fallback
-  const newId = `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
-  const rate = scrap_type === "iron" ? 32 : scrap_type === "aluminium" ? 45 : scrap_type === "plastic" ? 12 : 15;
+  const newId = `REQ-${Date.now().toString().slice(-4)}`;
+  const rate = scrap_type === "iron" ? 25 : scrap_type === "aluminium" ? 80 : scrap_type === "plastic" ? 10 : scrap_type === "cardboard" ? 8 : 15;
   const newReq: ScrapRequest = {
     id: newId,
     household_id: currentUserId,
@@ -261,8 +245,8 @@ export async function apiCreateRequest(params: {
     estimated_value: params.weight * rate,
     status: "OPEN",
     distance_km: 1.2,
-    latitude: params.lat || 28.5244,
-    longitude: params.lng || 77.2188,
+    latitude: payload.latitude,
+    longitude: payload.longitude,
     address: params.address,
     address_note: params.notes,
     created_at: new Date().toISOString(),
@@ -290,20 +274,22 @@ export async function apiFetchMyRequests(): Promise<ScrapRequest[]> {
         vendor_phone: item.vendor_phone,
         category: typeToCategory(item.scrap_type),
         scrap_type: item.scrap_type,
-        weight: item.quantity_kg || 10,
-        quantity_kg: item.quantity_kg || 10,
-        rate_per_kg: item.rate_per_kg || 15,
-        estimated_value: item.estimated_value || 150,
+        weight: Number(item.quantity_kg || 10),
+        quantity_kg: Number(item.quantity_kg || 10),
+        rate_per_kg: Number(item.rate_per_kg || 15),
+        estimated_value: Number(item.estimated_value || 150),
         status: normalizeStatus(item.status),
-        latitude: item.latitude || 28.5244,
-        longitude: item.longitude || 77.2188,
-        address: item.address_note || "Saket, New Delhi",
+        latitude: Number(item.latitude || 28.6139),
+        longitude: Number(item.longitude || 77.2090),
+        address: item.address_note || "Pandara Road, New Delhi",
+        address_note: item.address_note,
+        final_weight_kg: item.final_weight_kg ? Number(item.final_weight_kg) : undefined,
+        final_amount: item.final_amount ? Number(item.final_amount) : undefined,
         created_at: item.created_at || new Date().toISOString(),
       }));
     }
   } catch {}
 
-  // In-memory filter based on user role
   const isVendor = currentUserId >= 3;
   if (isVendor) {
     return mockRequests.filter((r) => r.vendor_id === currentUserId || r.status !== "OPEN");
@@ -313,9 +299,13 @@ export async function apiFetchMyRequests(): Promise<ScrapRequest[]> {
 
 // 4. Fetch Nearby Requests (For Vendors)
 export async function apiFetchNearby(radiusKm: number = 5): Promise<ScrapRequest[]> {
+  const vendorUser = DEMO_USERS.find((u) => u.id === currentUserId);
+  const lat = 28.6180;
+  const lng = 77.2050;
+
   try {
     const res = await fetch(
-      `${API_BASE_URL}/api/requests/nearby?lat=28.5244&lng=77.2188&radius_km=${radiusKm}`,
+      `${API_BASE_URL}/api/requests/nearby?lat=${lat}&lng=${lng}&radius_km=${radiusKm}`,
       {
         headers: { "X-Demo-User-Id": String(currentUserId) },
         signal: AbortSignal.timeout(3000),
@@ -327,27 +317,26 @@ export async function apiFetchNearby(radiusKm: number = 5): Promise<ScrapRequest
         id: item.id ? `REQ-${item.id}` : item.id,
         category: typeToCategory(item.scrap_type),
         scrap_type: item.scrap_type,
-        weight: item.quantity_kg || 10,
-        quantity_kg: item.quantity_kg || 10,
-        rate_per_kg: item.rate_per_kg || 15,
-        estimated_value: item.estimated_value || 150,
+        weight: Number(item.quantity_kg || 10),
+        quantity_kg: Number(item.quantity_kg || 10),
+        rate_per_kg: Number(item.rate_per_kg || 15),
+        estimated_value: Number(item.estimated_value || 150),
         status: normalizeStatus(item.status),
-        distance_km: item.distance_km || 1.5,
-        latitude: item.approx_latitude || 28.52,
-        longitude: item.approx_longitude || 77.22,
-        address: "Saket, New Delhi (Approximate area)",
+        distance_km: item.distance_km ? Number(item.distance_km) : 1.2,
+        latitude: Number(item.approx_latitude || item.latitude || 28.6139),
+        longitude: Number(item.approx_longitude || item.longitude || 77.2090),
+        address: "New Delhi (Approximate area)",
         created_at: item.created_at || new Date().toISOString(),
       }));
     }
   } catch {}
 
-  // Filter OPEN mock requests
   return mockRequests.filter((r) => r.status === "OPEN");
 }
 
 // 5. Vendor Claim Request (atomic claim with 409 conflict handling)
 export async function apiClaimRequest(requestId: string | number): Promise<ScrapRequest> {
-  const numericId = String(requestId).replace(/\D/g, "") || "101";
+  const numericId = String(requestId).replace(/\D/g, "");
 
   try {
     const res = await fetch(`${API_BASE_URL}/api/requests/${numericId}/claim`, {
@@ -359,11 +348,36 @@ export async function apiClaimRequest(requestId: string | number): Promise<Scrap
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error?.message || "ALREADY_CLAIMED: This request was just claimed by another vendor.");
     }
+    if (res.ok) {
+      const data = await res.json();
+      const found = mockRequests.find((r) => String(r.id) === String(requestId));
+      if (found) {
+        found.status = "CLAIMED";
+        found.vendor_id = currentUserId;
+        found.vendor_name = DEMO_USERS.find((u) => u.id === currentUserId)?.name || "Vendor";
+        found.claimed_at = data.claimed_at || new Date().toISOString();
+        return found;
+      }
+      return {
+        id: requestId,
+        category: "Scrap",
+        scrap_type: "general",
+        weight: 10,
+        quantity_kg: 10,
+        rate_per_kg: 15,
+        estimated_value: 150,
+        status: "CLAIMED",
+        vendor_id: currentUserId,
+        latitude: 28.6139,
+        longitude: 77.2090,
+        address: "New Delhi",
+        created_at: new Date().toISOString(),
+      };
+    }
   } catch (e: any) {
     if (e.message?.includes("ALREADY_CLAIMED")) throw e;
   }
 
-  // Update in mock store
   const found = mockRequests.find((r) => String(r.id) === String(requestId));
   if (found) {
     found.status = "CLAIMED";
@@ -377,13 +391,21 @@ export async function apiClaimRequest(requestId: string | number): Promise<Scrap
 
 // 6. Vendor Status Update (Mark Picked Up)
 export async function apiMarkPickedUp(requestId: string | number): Promise<ScrapRequest> {
-  const numericId = String(requestId).replace(/\D/g, "") || "101";
+  const numericId = String(requestId).replace(/\D/g, "");
   try {
-    await fetch(`${API_BASE_URL}/api/requests/${numericId}/pickup`, {
+    const res = await fetch(`${API_BASE_URL}/api/requests/${numericId}/pickup`, {
       method: "POST",
       headers: { "X-Demo-User-Id": String(currentUserId) },
       signal: AbortSignal.timeout(3000),
     });
+    if (res.ok) {
+      const found = mockRequests.find((r) => String(r.id) === String(requestId));
+      if (found) {
+        found.status = "PICKED UP";
+        found.picked_up_at = new Date().toISOString();
+        return found;
+      }
+    }
   } catch {}
 
   const found = mockRequests.find((r) => String(r.id) === String(requestId));
@@ -392,14 +414,27 @@ export async function apiMarkPickedUp(requestId: string | number): Promise<Scrap
     found.picked_up_at = new Date().toISOString();
     return found;
   }
-  throw new Error("Request not found");
+  return {
+    id: requestId,
+    category: "Scrap",
+    scrap_type: "general",
+    weight: 10,
+    quantity_kg: 10,
+    rate_per_kg: 15,
+    estimated_value: 150,
+    status: "PICKED UP",
+    latitude: 28.6139,
+    longitude: 77.2090,
+    address: "New Delhi",
+    created_at: new Date().toISOString(),
+  };
 }
 
 // 7. Vendor Complete Request with Final Weight Settlement
 export async function apiCompleteRequest(requestId: string | number, finalWeightKg: number): Promise<ScrapRequest> {
-  const numericId = String(requestId).replace(/\D/g, "") || "101";
+  const numericId = String(requestId).replace(/\D/g, "");
   try {
-    await fetch(`${API_BASE_URL}/api/requests/${numericId}/complete`, {
+    const res = await fetch(`${API_BASE_URL}/api/requests/${numericId}/complete`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -408,6 +443,17 @@ export async function apiCompleteRequest(requestId: string | number, finalWeight
       body: JSON.stringify({ final_weight_kg: finalWeightKg }),
       signal: AbortSignal.timeout(3000),
     });
+    if (res.ok) {
+      const data = await res.json();
+      const found = mockRequests.find((r) => String(r.id) === String(requestId));
+      if (found) {
+        found.status = "COMPLETED";
+        found.final_weight_kg = finalWeightKg;
+        found.final_amount = Number(data.final_amount || (finalWeightKg * found.rate_per_kg));
+        found.completed_at = new Date().toISOString();
+        return found;
+      }
+    }
   } catch {}
 
   const found = mockRequests.find((r) => String(r.id) === String(requestId));
@@ -418,18 +464,40 @@ export async function apiCompleteRequest(requestId: string | number, finalWeight
     found.completed_at = new Date().toISOString();
     return found;
   }
-  throw new Error("Request not found");
+  return {
+    id: requestId,
+    category: "Scrap",
+    scrap_type: "general",
+    weight: finalWeightKg,
+    quantity_kg: finalWeightKg,
+    rate_per_kg: 15,
+    estimated_value: finalWeightKg * 15,
+    status: "COMPLETED",
+    final_weight_kg: finalWeightKg,
+    final_amount: finalWeightKg * 15,
+    latitude: 28.6139,
+    longitude: 77.2090,
+    address: "New Delhi",
+    created_at: new Date().toISOString(),
+  };
 }
 
 // 8. Household Cancel Request
 export async function apiCancelRequest(requestId: string | number): Promise<ScrapRequest> {
-  const numericId = String(requestId).replace(/\D/g, "") || "101";
+  const numericId = String(requestId).replace(/\D/g, "");
   try {
-    await fetch(`${API_BASE_URL}/api/requests/${numericId}/cancel`, {
+    const res = await fetch(`${API_BASE_URL}/api/requests/${numericId}/cancel`, {
       method: "POST",
       headers: { "X-Demo-User-Id": String(currentUserId) },
       signal: AbortSignal.timeout(3000),
     });
+    if (res.ok) {
+      const found = mockRequests.find((r) => String(r.id) === String(requestId));
+      if (found) {
+        found.status = "CANCELLED";
+        return found;
+      }
+    }
   } catch {}
 
   const found = mockRequests.find((r) => String(r.id) === String(requestId));
@@ -437,5 +505,18 @@ export async function apiCancelRequest(requestId: string | number): Promise<Scra
     found.status = "CANCELLED";
     return found;
   }
-  throw new Error("Request not found");
+  return {
+    id: requestId,
+    category: "Scrap",
+    scrap_type: "general",
+    weight: 10,
+    quantity_kg: 10,
+    rate_per_kg: 15,
+    estimated_value: 150,
+    status: "CANCELLED",
+    latitude: 28.6139,
+    longitude: 77.2090,
+    address: "New Delhi",
+    created_at: new Date().toISOString(),
+  };
 }

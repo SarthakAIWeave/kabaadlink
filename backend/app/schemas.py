@@ -46,17 +46,12 @@ class ScrapRequestSummary(BaseModel):
     estimated_value: Decimal
     latitude: float
     longitude: float
+    approx_latitude: Optional[float] = None
+    approx_longitude: Optional[float] = None
     distance_km: Optional[float] = None
     status: str
-    created_at: Optional[datetime] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ScrapRequestDetail(ScrapRequestSummary):
     address_note: Optional[str] = None
-    client_token: Optional[str] = None
-    household_id: int
+    household_id: Optional[int] = None
     household_name: Optional[str] = None
     household_phone: Optional[str] = None
     vendor_id: Optional[int] = None
@@ -64,8 +59,14 @@ class ScrapRequestDetail(ScrapRequestSummary):
     vendor_phone: Optional[str] = None
     final_weight_kg: Optional[Decimal] = None
     final_amount: Optional[Decimal] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ScrapRequestDetail(ScrapRequestSummary):
+    client_token: Optional[str] = None
+    updated_at: Optional[datetime] = None
     claimed_at: Optional[datetime] = None
     picked_up_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -86,13 +87,16 @@ class CreateRequestRequest(BaseModel):
 
 class CreateRequestResponse(BaseModel):
     id: int
+    household_id: int
     scrap_type: str
     quantity_kg: Decimal
     rate_per_kg: Decimal
     estimated_value: Decimal
     latitude: float
     longitude: float
+    address_note: Optional[str] = None
     status: str
+    created_at: datetime
     distance_km: Optional[float] = None
 
 
@@ -118,6 +122,7 @@ class StatusUpdateResponse(BaseModel):
 class ErrorDetail(BaseModel):
     code: str
     message: str
+    details: Optional[List[dict]] = None
 
 
 class ErrorResponse(BaseModel):

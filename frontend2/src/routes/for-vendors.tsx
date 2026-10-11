@@ -1,10 +1,13 @@
 import { Title } from "@solidjs/meta";
-import { createSignal, createMemo, For, Show } from "solid-js";
+import { createSignal, createMemo, createEffect, For, Show } from "solid-js";
 import {
   claimPickup,
   formatRupees,
   notify,
   requests,
+  nearbyRequests,
+  refreshRequests,
+  refreshNearbyRequests,
   updatePickupStatus,
   vendors,
 } from "../data/store";
@@ -44,8 +47,12 @@ export default function ForVendors() {
   const [radius, setRadius] = createSignal("5 km");
   const [tab, setTab] = createSignal<"feed" | "my-pickups">("feed");
 
-  // Open requests available to claim
-  const openRequests = createMemo(() => requests().filter((r) => r.status === "OPEN"));
+  // Open requests available to claim from nearby feed
+  const openRequests = createMemo(() => {
+    const nearby = nearbyRequests().filter((r) => r.status === "OPEN");
+    if (nearby.length > 0) return nearby;
+    return requests().filter((r) => r.status === "OPEN");
+  });
 
   // Claimed/in-progress pickups assigned to vendor
   const claimedPickups = createMemo(() =>
@@ -117,7 +124,10 @@ export default function ForVendors() {
                   <button
                     class={{ "pill-select": true, "category-selected": radius() === r }}
                     style="padding: 4px 10px; font-size: 11px; font-weight: 700; border-radius: 12px; border: 1px solid #d1d5db;"
-                    onClick={() => setRadius(r)}
+                    onClick={() => {
+                      setRadius(r);
+                      refreshNearbyRequests(parseInt(r, 10) || 5);
+                    }}
                   >
                     {r}
                   </button>

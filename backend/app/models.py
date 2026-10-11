@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import (
     BigInteger,
+    Integer,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -15,6 +16,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
+# Cross-compatible 64-bit integer ID type: BIGINT in PostgreSQL, INTEGER in SQLite (rowid)
+PK_BIGINT = BigInteger().with_variant(Integer, "sqlite")
+FK_BIGINT = BigInteger().with_variant(Integer, "sqlite")
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -22,7 +28,7 @@ class Base(DeclarativeBase):
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(PK_BIGINT, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -51,7 +57,7 @@ class User(Base):
 class ScrapRate(Base):
     __tablename__ = "scrap_rates"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(PK_BIGINT, primary_key=True, autoincrement=True)
     scrap_type: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     rate_per_kg: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
@@ -69,9 +75,9 @@ class ScrapRate(Base):
 class ScrapRequest(Base):
     __tablename__ = "scrap_requests"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    household_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
-    vendor_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    id: Mapped[int] = mapped_column(PK_BIGINT, primary_key=True, autoincrement=True)
+    household_id: Mapped[int] = mapped_column(FK_BIGINT, ForeignKey("users.id"), nullable=False)
+    vendor_id: Mapped[Optional[int]] = mapped_column(FK_BIGINT, ForeignKey("users.id"), nullable=True)
     scrap_type: Mapped[str] = mapped_column(Text, nullable=False)
     quantity_kg: Mapped[float] = mapped_column(Numeric(8, 3), nullable=False)
     rate_per_kg: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
@@ -146,11 +152,11 @@ class ScrapRequest(Base):
 class RequestEvent(Base):
     __tablename__ = "request_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(PK_BIGINT, primary_key=True, autoincrement=True)
     request_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("scrap_requests.id", ondelete="CASCADE"), nullable=False
+        FK_BIGINT, ForeignKey("scrap_requests.id", ondelete="CASCADE"), nullable=False
     )
-    actor_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(FK_BIGINT, ForeignKey("users.id"), nullable=True)
     event: Mapped[str] = mapped_column(Text, nullable=False)
     from_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     to_status: Mapped[str] = mapped_column(Text, nullable=False)
