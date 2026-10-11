@@ -1,0 +1,95 @@
+from sqlalchemy import (
+    BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text, func
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from datetime import datetime
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    household_requests: Mapped[list["ScrapRequest"]] = relationship(
+        "ScrapRequest", foreign_keys="ScrapRequest.household_id", back_populates="household"
+    )
+    vendor_requests: Mapped[list["ScrapRequest"]] = relationship(
+        "ScrapRequest", foreign_keys="ScrapRequest.vendor_id", back_populates="vendor"
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('HOUSEHOLD', 'VENDOR')", name="ck_users_role"),
+    )
+
+
+class ScrapRate(Base):
+    __tablename__ = "scrap_rates"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    scrap_type: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    rate_per_kg: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        CheckConstraint("rate_per_kg > 0", name="ck_scrap_rates_rate_positive"),
+    )
+
+
+class ScrapRequest(Base):
+    __tablename__ = "scrap_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    household_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    vendor_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    scrap_type: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity_kg: Mapped[float] = mapped_column(Numeric(8, 3), nullable=False)
+    rate_per_kg: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    estimated_value: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    latitude: Mapped[float] = mapped_column(Numeric(10, 7), nullable=False)
+    longitude: Mapped[float] = mapped_column(Numeric(10, 7), nullable=False)
+    address_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="OPEN")
+    final_weight_kg: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
+    final_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    picked_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    household: Mapped["User"] = relationship("User", foreign_keys=[household_id], back_populates="household_requests")
+    vendor: Mapped["User | None"] = relationship("User", foreign_keys=[vendor_id], back_populates="vendor_requests")
+
+    __table_args__ = (
+        CheckConstraint("status IN ('OPEN', 'CLAIMED', 'PICKED_UP', 'COMPLETED', 'CANCELLED')", name="ck_scrap_requests_status"),
+        CheckConstraint("quantity_kg BETWEEN 0.1 AND 500", name="ck_scrap_requests_quantity_range"),
+        CheckConstraint("latitude BETWEEN -90 AND 90", name="ck_scrap_requests_lat_range"),
+        CheckConstraint("longitude BETWEEN -180 AND 180", name="ck_scrap_requests_lng_range"),
+        CheckConstraint("(status = 'OPEN') = (vendor_id IS NULL)", name="ck_scrap_requests_open_vendor_null"),
+        CheckConstraint(
+            "(status IN ('CLAIMED', 'PICKED_UP', 'COMPLETED')) = (vendor_id IS NOT NULL)",
+            name="ck_scrap_requests_claimed_vendor_not_null"
+        ),
+        CheckConstraint(
+            "(status = 'COMPLETED') = (final_weight_kg IS NOT NULL AND final_amount IS NOT NULL)",
+            name="ck_scrap_requests_completed_final"
+        ),
+        Index("ix_scrap_requests_status_created", "status", "created_at"),
+        Index("ix_scrap_requests_household_id", "household_id"),
+        Index("ix_scrap_requests_vendor_id", "vendor_id"),
+    )
