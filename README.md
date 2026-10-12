@@ -250,6 +250,5 @@ To evaluate the application in under 3 minutes:
 
 ## 👥 Authors & Acknowledgments
 
-- **Team:** KabaadLink Innovators
-- **Hackathon:** AWS Hyperlocal Circular Economy Challenge
-- **License:** MIT License
+- **Team:** Ajentic Janta Party
+- **Hackathon:** Environmental Hacks
